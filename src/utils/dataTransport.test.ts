@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { generateExportUrl, parseImportUrl, parseFileContent } from './dataTransport'
+import {
+  generateExportUrl,
+  parseImportUrl,
+  parseFileContent,
+  validateRecord,
+  validateUser,
+} from './dataTransport'
 import type { ExpenseRecord, User } from '../types'
 
 // Sample test data
@@ -170,6 +176,44 @@ describe('parseImportUrl', () => {
       expect(result.error).toContain('Unsupported version')
     }
   })
+
+  it('should reject records with invalid field types', () => {
+    const payload = {
+      version: 1,
+      records: [{ uuid: 123, title: 'bad', amount: 'banana' }],
+      users: [sampleUser],
+    }
+    const encoded = btoa(JSON.stringify(payload))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+
+    const result = parseImportUrl(`https://example.com/import?data=${encoded}`)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Record 0')
+    }
+  })
+
+  it('should reject users with missing email', () => {
+    const payload = {
+      version: 1,
+      records: [sampleRecord],
+      users: [{ alias: 'No Email' }],
+    }
+    const encoded = btoa(JSON.stringify(payload))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+
+    const result = parseImportUrl(`https://example.com/import?data=${encoded}`)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('User 0')
+    }
+  })
 })
 
 describe('parseFileContent', () => {
@@ -229,6 +273,110 @@ describe('parseFileContent', () => {
     if (!result.success) {
       expect(result.error).toContain('users is not an array')
     }
+  })
+
+  it('should reject records with invalid amount type', () => {
+    const badRecord = { ...sampleRecord, amount: 'not-a-number' }
+    const fileContent = JSON.stringify({
+      version: 1,
+      exportedAt: Date.now(),
+      records: [badRecord],
+      users: [sampleUser],
+    })
+
+    const result = parseFileContent(fileContent)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Record 0')
+      expect(result.error).toContain('invalid amount')
+    }
+  })
+
+  it('should reject records with missing paidBy', () => {
+    const badRecord = { ...sampleRecord, paidBy: [] }
+    const fileContent = JSON.stringify({
+      version: 1,
+      exportedAt: Date.now(),
+      records: [badRecord],
+      users: [sampleUser],
+    })
+
+    const result = parseFileContent(fileContent)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Record 0')
+      expect(result.error).toContain('missing paidBy')
+    }
+  })
+
+  it('should reject records with invalid participant', () => {
+    const badRecord = { ...sampleRecord, paidBy: [{ email: '', share: 100 }] }
+    const fileContent = JSON.stringify({
+      version: 1,
+      exportedAt: Date.now(),
+      records: [badRecord],
+      users: [sampleUser],
+    })
+
+    const result = parseFileContent(fileContent)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('paidBy[0]')
+    }
+  })
+})
+
+describe('validateRecord', () => {
+  it('should accept a valid record', () => {
+    expect(validateRecord(sampleRecord, 0)).toBeNull()
+  })
+
+  it('should reject non-object', () => {
+    expect(validateRecord('string', 0)).toContain('not an object')
+    expect(validateRecord(null, 0)).toContain('not an object')
+  })
+
+  it('should reject missing uuid', () => {
+    const { uuid, ...noUuid } = sampleRecord
+    expect(validateRecord(noUuid, 0)).toContain('missing uuid')
+  })
+
+  it('should reject invalid date format', () => {
+    expect(validateRecord({ ...sampleRecord, date: '15-01-2024' }, 0)).toContain('invalid date format')
+  })
+
+  it('should reject invalid currency length', () => {
+    expect(validateRecord({ ...sampleRecord, currency: 'US' }, 0)).toContain('invalid currency')
+  })
+
+  it('should reject NaN amount', () => {
+    expect(validateRecord({ ...sampleRecord, amount: NaN }, 0)).toContain('invalid amount')
+  })
+
+  it('should reject invalid participant share', () => {
+    const bad = { ...sampleRecord, paidFor: [{ email: 'a@b.com', share: NaN }] }
+    expect(validateRecord(bad, 0)).toContain('invalid share')
+  })
+})
+
+describe('validateUser', () => {
+  it('should accept a valid user', () => {
+    expect(validateUser(sampleUser, 0)).toBeNull()
+  })
+
+  it('should reject non-object', () => {
+    expect(validateUser(42, 0)).toContain('not an object')
+  })
+
+  it('should reject empty email', () => {
+    expect(validateUser({ email: '', alias: 'X' }, 0)).toContain('missing email')
+  })
+
+  it('should reject missing alias', () => {
+    expect(validateUser({ email: 'a@b.com' }, 0)).toContain('missing alias')
   })
 })
 

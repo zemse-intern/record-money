@@ -18,6 +18,9 @@ export interface FilePayload {
 // Max URL length for browser compatibility
 const MAX_URL_LENGTH = 2000
 
+// Max records allowed in a single import to prevent storage DoS
+const MAX_IMPORT_RECORDS = 10000
+
 // URL-safe base64 encoding (replaces + with -, / with _, removes padding =)
 function toUrlSafeBase64(str: string): string {
   const base64 = btoa(unescape(encodeURIComponent(str)))
@@ -34,6 +37,68 @@ function fromUrlSafeBase64(str: string): string {
     base64 += '='.repeat(4 - pad)
   }
   return decodeURIComponent(escape(atob(base64)))
+}
+
+function validateParticipant(p: unknown, context: string): string | null {
+  if (typeof p !== 'object' || p === null) return `${context}: not an object`
+  const part = p as Record<string, unknown>
+  if (typeof part.email !== 'string' || !part.email) return `${context}: missing email`
+  if (typeof part.share !== 'number' || isNaN(part.share)) return `${context}: invalid share`
+  return null
+}
+
+export function validateRecord(r: unknown, index: number): string | null {
+  if (typeof r !== 'object' || r === null) return `Record ${index}: not an object`
+  const rec = r as Record<string, unknown>
+
+  if (typeof rec.uuid !== 'string' || !rec.uuid) return `Record ${index}: missing uuid`
+  if (typeof rec.title !== 'string') return `Record ${index}: missing title`
+  if (typeof rec.amount !== 'number' || isNaN(rec.amount)) return `Record ${index}: invalid amount`
+  if (typeof rec.currency !== 'string' || rec.currency.length !== 3) return `Record ${index}: invalid currency`
+  if (typeof rec.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rec.date)) return `Record ${index}: invalid date format`
+  if (!Array.isArray(rec.paidBy) || rec.paidBy.length === 0) return `Record ${index}: missing paidBy`
+  if (!Array.isArray(rec.paidFor) || rec.paidFor.length === 0) return `Record ${index}: missing paidFor`
+
+  for (let i = 0; i < rec.paidBy.length; i++) {
+    const err = validateParticipant(rec.paidBy[i], `Record ${index} paidBy[${i}]`)
+    if (err) return err
+  }
+  for (let i = 0; i < rec.paidFor.length; i++) {
+    const err = validateParticipant(rec.paidFor[i], `Record ${index} paidFor[${i}]`)
+    if (err) return err
+  }
+
+  if (typeof rec.createdAt !== 'number') return `Record ${index}: missing createdAt`
+  if (typeof rec.updatedAt !== 'number') return `Record ${index}: missing updatedAt`
+
+  return null
+}
+
+export function validateUser(u: unknown, index: number): string | null {
+  if (typeof u !== 'object' || u === null) return `User ${index}: not an object`
+  const user = u as Record<string, unknown>
+  if (typeof user.email !== 'string' || !user.email) return `User ${index}: missing email`
+  if (typeof user.alias !== 'string') return `User ${index}: missing alias`
+  return null
+}
+
+function validateRecordsAndUsers(
+  records: unknown[],
+  users: unknown[]
+): string | null {
+  if (records.length > MAX_IMPORT_RECORDS) {
+    return `Too many records (${records.length}). Maximum allowed is ${MAX_IMPORT_RECORDS}.`
+  }
+
+  for (let i = 0; i < records.length; i++) {
+    const err = validateRecord(records[i], i)
+    if (err) return err
+  }
+  for (let i = 0; i < users.length; i++) {
+    const err = validateUser(users[i], i)
+    if (err) return err
+  }
+  return null
 }
 
 // Generate export URL
@@ -98,6 +163,11 @@ export function parseImportUrl(
       return { success: false, error: 'Invalid payload: users is not an array' }
     }
 
+    const validationError = validateRecordsAndUsers(payload.records, payload.users)
+    if (validationError) {
+      return { success: false, error: `Invalid payload: ${validationError}` }
+    }
+
     return { success: true, payload }
   } catch (e) {
     return {
@@ -153,6 +223,11 @@ export function parseFileContent(
 
     if (!Array.isArray(payload.users)) {
       return { success: false, error: 'Invalid payload: users is not an array' }
+    }
+
+    const validationError = validateRecordsAndUsers(payload.records, payload.users)
+    if (validationError) {
+      return { success: false, error: `Invalid payload: ${validationError}` }
     }
 
     return { success: true, payload }
